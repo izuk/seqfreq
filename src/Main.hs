@@ -1,5 +1,5 @@
 import Control.Monad (foldM_, replicateM, (>=>))
-import Data.Array.IO (IOArray)
+import Data.Array.IO (IOUArray)
 import qualified Data.Array.IO as A
 import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy as B
@@ -15,17 +15,16 @@ data LCG = LCG Word64 Word64 Word64
 rand :: Int -> LCG -> Seed -> Seed
 rand i (LCG m a c) s = (((s * a) `mod` m) + c + fromIntegral i) `mod` m
 
-type Counts = IOArray Word64 Int
+type Counts = IOUArray Word64 Int
 
-type Table = IOArray Int Counts
+type Table = [Counts]
 
 empty :: [Seed]
 empty = repeat 0
 
 count :: [Seed] -> Table -> IO Int
 count seeds tab = do
-  rows <- A.getElems tab
-  counts <- sequence $ zipWith f rows seeds
+  counts <- sequence $ zipWith f tab seeds
   return $ minimum counts
   where
     f row seed = do
@@ -35,8 +34,7 @@ count seeds tab = do
 
 increment :: [Seed] -> Table -> IO Int
 increment seeds tab = do
-  rows <- A.getElems tab
-  counts <- sequence $ zipWith f rows seeds
+  counts <- sequence $ zipWith f tab seeds
   return $ minimum counts
   where
     f row seed = do
@@ -49,15 +47,18 @@ increment seeds tab = do
 roll :: Int -> [LCG] -> [Seed] -> [Seed]
 roll ch = zipWith $ rand ch
 
+minExtend = 20
+
 step :: [LCG] -> Table -> [Seed] -> Int -> IO [Seed]
 step lcgs tab seeds ch = do
   let next = roll ch lcgs seeds
   n <- increment next tab
-  return $! if n > 10 then next else empty
+  return $! if n > minExtend then next else empty
 
-maxSize = 100
+maxSize = 50
 minCount = 150
-choices = map ord $ ['A' .. 'Z'] ++ ['a' .. 'z'] ++ ['0' .. '9'] ++ "{},-./= "
+choices = [1 .. 127]
+--choices = map ord $ ['A' .. 'Z'] ++ ['a' .. 'z'] ++ ['0' .. '9'] ++ "{},-./= "
 
 search :: [LCG] -> Table -> IO ()
 search lcgs tab = go [] empty
@@ -75,7 +76,7 @@ search lcgs tab = go [] empty
 thd :: (a, b, c) -> c
 thd (_, _, x) = x                    
 
-bits = 5000
+bits = 10000
 height = length lcgs
 lcgs = [ LCG (2 ^ 32) 1664525 1013904223
        , LCG (2 ^ 32) 22695477 1
@@ -84,8 +85,7 @@ lcgs = [ LCG (2 ^ 32) 1664525 1013904223
 
 main :: IO ()
 main = do
-  rows <- replicateM height $ A.newArray (0, bits - 1) 0
-  tab <- A.newListArray (0, height - 1) rows :: IO Table
+  tab <- replicateM height $ A.newArray (0, bits - 1) 0 :: IO Table
   contents <- B.getContents
   foldM_ (step lcgs tab) empty (map fromIntegral $ B.unpack contents)
   search lcgs tab
