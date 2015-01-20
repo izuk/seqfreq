@@ -3,7 +3,7 @@ import Data.Array.IO (IOArray)
 import qualified Data.Array.IO as A
 import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy as B
-import Data.Char (chr)
+import Data.Char (chr, ord)
 import Data.Word (Word64)
 
 import Debug.Trace (trace)
@@ -53,24 +53,29 @@ step :: [LCG] -> Table -> [Seed] -> Int -> IO [Seed]
 step lcgs tab seeds ch = do
   let next = roll ch lcgs seeds
   n <- increment next tab
-  return $! if n > 2 then next else empty
+  return $! if n > 10 then next else empty
 
-search :: [LCG] -> Table -> IO [([Int], [Seed], Int)]
+maxSize = 100
+minCount = 150
+choices = map ord $ ['A' .. 'Z'] ++ ['a' .. 'z'] ++ ['0' .. '9'] ++ "{},-./= "
+
+search :: [LCG] -> Table -> IO ()
 search lcgs tab = go [] empty
   where
-    go prefix _ | length prefix > 3 = return []
+    go prefix _ | length prefix > maxSize = return ()
     go prefix seeds = do
       ns <- mapM (\ch -> let next = roll ch lcgs seeds
                          in do n <- count next tab
-                               return (ch : prefix, next, n)) [0 .. 255]
-      let ns' = filter ((>= 20 ) . thd) ns
-      sub <- mapM (\(prefix', next, _) -> go prefix' next) ns'
-      return $ ns' ++ concat sub
+                               return (ch : prefix, next, n)) choices
+      let ns' = filter ((>= minCount) . thd) ns
+      mapM_ (\(prefix', next, n) -> do
+                putStrLn $ show n ++ " " ++ (reverse $ map chr prefix')
+                go prefix' next) ns'
 
 thd :: (a, b, c) -> c
 thd (_, _, x) = x                    
 
-bits = 1000
+bits = 5000
 height = length lcgs
 lcgs = [ LCG (2 ^ 32) 1664525 1013904223
        , LCG (2 ^ 32) 22695477 1
@@ -83,6 +88,5 @@ main = do
   tab <- A.newListArray (0, height - 1) rows :: IO Table
   contents <- B.getContents
   foldM_ (step lcgs tab) empty (map fromIntegral $ B.unpack contents)
-  found <- search lcgs tab
-  mapM_ (\(prefix, _, n) -> putStrLn ((reverse $ map chr prefix) ++ " " ++ show n)) found
+  search lcgs tab
   --mapM_ (A.getElems >=> print) rows
