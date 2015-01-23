@@ -1,34 +1,41 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-import Control.Monad (foldM_, replicateM, (>=>))
+import Control.DeepSeq (NFData, ($!!))
+import Control.Monad ((>=>), replicateM, zipWithM)
 import Data.Array.IO (IOUArray)
 import qualified Data.Array.IO as A
 import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy as B
 import Data.Char (chr, ord)
 import Data.Word (Word64, Word8)
-
-import Debug.Trace (trace)
+import Text.Printf (printf)
 
 class Gen g a | g -> a where
-  zero :: g -> g
+  reset :: g -> g
   next :: a -> g -> g
   index :: g -> (Int, Int) -> Int
 
-reset :: Gen g a => [g] -> [g]
-reset = map zero
+resetAll :: (NFData g, Gen g a) => [g] -> [g]
+resetAll = map reset
+{-# INLINE resetAll #-}
 
 data LCG = LCG
-           { lcgM :: Word64
-           , lcgA :: Word64
-           , lcgC :: Word64
-           , lcgS :: Word64
+           { lcgM :: !Word64
+           , lcgA :: !Word64
+           , lcgC :: !Word64
+           , lcgS :: !Word64
            }
 
+instance NFData LCG
+
+instance Show LCG where
+  show (LCG m a c s) = printf "%d {%d|%d|%d}" s m a c
+
 instance Gen LCG Word8 where
-  zero g@(LCG _ _ c _) = g { lcgS = c }
+  reset g@(LCG _ _ c _) = g { lcgS = c }
   next ch g@(LCG m a c s) = g { lcgS = (((s * a) `mod` m) + c + fromIntegral ch) `mod` m }
   index g@(LCG _ _ _ s) (min, max) = (fromIntegral s `mod` (max - min + 1)) + min
 
@@ -37,8 +44,8 @@ type Table = [Counts]
 
 count :: Gen g a => [g] -> Table -> IO Int
 count gens tab = do
-  counts <- sequence $ zipWith f tab gens
-  return $ minimum counts
+  counts <- zipWithM f tab gens
+  return $! minimum counts
   where
     f row gen = do
       bounds <- A.getBounds row
@@ -47,29 +54,33 @@ count gens tab = do
 
 increment :: Gen g a => [g] -> Table -> IO Int
 increment gens tab = do
-  counts <- sequence $ zipWith f tab gens
-  return $ minimum counts
+  counts <- zipWithM f tab gens
+  return $! minimum counts
   where
     f row gen = do
       bounds <- A.getBounds row
       let i = index gen bounds
       count <- A.readArray row i
-      A.writeArray row i (count + 1)
+      A.writeArray row i $ count + 1
       return count
 
 roll :: Gen g a => a -> [g] -> [g]
 roll ch = map (next ch)
+{-# INLINE roll #-}
 
-minExtend = 10
+minExtend = 2
 
-step :: Gen g a => Table -> [g] -> a -> IO [g]
+step :: (Show a, Show g, NFData g, Gen g a) => Table -> [g] -> a -> IO [g]
 step tab gens ch = do
   let gens' = roll ch gens
   n <- increment gens' tab
-  return $! if n > minExtend then gens' else reset gens'
+  let next = if n >= minExtend
+             then gens'
+             else resetAll gens'
+  return $!! next
 
 maxSize = 50
-minCount = 20
+minCount = 100
 choices = [1 .. 127]
 
 search :: Table -> [LCG] -> IO ()
@@ -82,23 +93,29 @@ search tab = go []
                                return (ch : prefix, gens', n)) choices
       let ns' = filter ((>= minCount) . thd) ns
       mapM_ (\(prefix', gens', n) -> do
-                putStrLn $ show n ++ " " ++ (reverse $ map (chr . fromIntegral) prefix')
+                putStrLn $ show n ++ " " ++ reverse (map (chr . fromIntegral) prefix')
                 go prefix' gens') ns'
 
 thd :: (a, b, c) -> c
 thd (_, _, x) = x                    
 
-bits = 10000
+bits = 1000000
 height = length lcgs
-lcgs = [ LCG (2 ^ 32) 1664525 1013904223 1013904223
-       , LCG (2 ^ 32) 22695477 1 1
-       , LCG (2 ^ 31) 1103515245 12345 12345
+lcgs = [ LCG (2 ^ 32) 1664525 1013904223 0
+       , LCG (2 ^ 32) 22695477 1 0
+       , LCG (2 ^ 31) 1103515245 12345 0
+       , LCG (2 ^ 32) 134775813 1 0
+       , LCG (2 ^ 32) 214013 2531011 0
+       , LCG (2 ^ 32) 1140671485 12820163 0
        ]
 
 main :: IO ()
 main = do
   tab <- replicateM height $ A.newArray (0, bits - 1) 0 :: IO Table
-  contents <- B.getContents
-  foldM_ (step tab) lcgs (B.unpack contents)
-  search tab lcgs
+  let root = resetAll lcgs
+      go [] _ = return ()
+      go (ch:s) gens = step tab gens ch >>= go s
+  B.getContents >>= flip go root . B.unpack
   --mapM_ (A.getElems >=> print) tab
+  search tab root
+
