@@ -4,7 +4,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 
 import Control.DeepSeq (NFData, ($!!))
-import Control.Monad ((>=>), replicateM, zipWithM)
+import Control.Monad ((>=>), foldM, replicateM, zipWithM)
 import Data.Array.IO (IOUArray)
 import qualified Data.Array.IO as A
 import Data.ByteString.Lazy (ByteString)
@@ -18,7 +18,7 @@ class Gen g a | g -> a where
   next :: a -> g -> g
   index :: g -> (Int, Int) -> Int
 
-resetAll :: (NFData g, Gen g a) => [g] -> [g]
+resetAll :: Gen g a => [g] -> [g]
 resetAll = map reset
 {-# INLINE resetAll #-}
 
@@ -70,7 +70,7 @@ roll ch = map (next ch)
 
 minExtend = 2
 
-step :: (Show a, Show g, NFData g, Gen g a) => Table -> [g] -> a -> IO [g]
+step :: (NFData g, Gen g a) => Table -> [g] -> a -> IO [g]
 step tab gens ch = do
   let gens' = roll ch gens
   n <- increment gens' tab
@@ -113,9 +113,7 @@ main :: IO ()
 main = do
   tab <- replicateM height $ A.newArray (0, bits - 1) 0 :: IO Table
   let root = resetAll lcgs
-      go [] _ = return ()
-      go (ch:s) gens = step tab gens ch >>= go s
-  B.getContents >>= flip go root . B.unpack
+  B.getContents >>= foldM (step tab) root . B.unpack
   --mapM_ (A.getElems >=> print) tab
   search tab root
 
